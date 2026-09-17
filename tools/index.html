@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chirp</title>
+<style>
+  :root { --bg:#14161a; --panel:#1c1f26; --line:#2b3039; --text:#e6e8ec; --dim:#8b93a1; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --accent:#60a5fa; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:16px; }
+  h1 { font-size:16px; margin:0; font-weight:600; }
+  #device { color:var(--dim); font-size:13px; }
+  #device.bad { color:var(--bad); }
+  main { display:grid; grid-template-columns:1fr 1fr; gap:16px; padding:16px; align-items:start; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
+  h2 { font-size:13px; margin:0 0 10px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; }
+  #drop { border:2px dashed var(--line); border-radius:8px; padding:28px; text-align:center; color:var(--dim); cursor:pointer; }
+  #drop.over { border-color:var(--accent); color:var(--accent); }
+  ul { list-style:none; margin:10px 0 0; padding:0; max-height:46vh; overflow:auto; }
+  li { display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px solid var(--line); }
+  li:last-child { border-bottom:0; }
+  .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tag { font-size:11px; padding:2px 7px; border-radius:99px; border:1px solid var(--line); color:var(--dim); }
+  .tag.ready { color:var(--ok); border-color:var(--ok); }
+  .tag.failed { color:var(--bad); border-color:var(--bad); }
+  .tag.skipped { color:var(--warn); border-color:var(--warn); }
+  .tag.uploaded { color:var(--accent); border-color:var(--accent); }
+  button { font:inherit; background:var(--line); color:var(--text); border:0; border-radius:6px; padding:7px 12px; cursor:pointer; }
+  button:hover { filter:brightness(1.25); }
+  button:disabled { opacity:.4; cursor:default; }
+  button.primary { background:var(--accent); color:#0b1220; font-weight:600; }
+  .x { background:none; color:var(--dim); padding:2px 6px; }
+  select { font:inherit; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:7px; }
+  .row { display:flex; gap:8px; align-items:center; margin-top:12px; }
+  #log { margin-top:12px; font-family:ui-monospace,monospace; font-size:12px; color:var(--dim); max-height:120px; overflow:auto; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Chirp</h1>
+  <span id="device">connecting…</span>
+  <button id="refresh" style="margin-left:auto">Refresh</button>
+</header>
+
+<main>
+  <section>
+    <h2>Staging</h2>
+    <div id="drop">Drop music here<br><small>any format — converted to 192k stereo MP3</small></div>
+    <input id="file" type="file" multiple accept="audio/*" hidden>
+    <ul id="staged"></ul>
+    <div class="row">
+      <select id="folder"></select>
+      <button id="sync" class="primary">Sync</button>
+      <button id="clear">Clear</button>
+    </div>
+    <div id="log"></div>
+  </section>
+
+  <section>
+    <h2>On the card</h2>
+    <select id="browse"></select>
+    <ul id="card"></ul>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = (u, o) => fetch(u, o).then(r => r.json());
+
+let dirs = [];
+
+function fillSelect(el, keep) {
+  el.innerHTML = dirs.map(d => `<option${d === keep ? ' selected' : ''}>${d}</option>`).join('');
+}
+
+async function loadDevice() {
+  const d = await api('/api/device');
+  const el = $('#device');
+  if (!d.ok) { el.textContent = d.error; el.className = 'bad'; dirs = []; return; }
+  el.className = '';
+  const free = (d.info.total - d.info.used) / 1e9;
+  el.textContent = `connected · ${free.toFixed(1)} GB free`;
+  dirs = d.dirs;
+  fillSelect($('#folder'), $('#folder').value);
+  fillSelect($('#browse'), $('#browse').value);
+  loadCard();
+}
+
+async function loadCard() {
+  const dir = $('#browse').value || '/';
+  const r = await api('/api/device/files?dir=' + encodeURIComponent(dir));
+  $('#card').innerHTML = !r.ok ? `<li class="name">${r.error}</li>` :
+    (r.files.length ? r.files.map(f => `
+      <li><span class="name">${f.n}</span>
+          <span class="tag">${(f.s / 1048576).toFixed(1)} MB</span>
+          <button class="x" data-del="${dir === '/' ? '' : dir}/${f.n}">✕</button></li>`).join('')
+    : '<li class="name" style="color:var(--dim)">empty</li>');
+}
+
+async function loadStaging() {
+  const r = await api('/api/staging');
+  $('#staged').innerHTML = r.items.map(i => `
+    <li><span class="name" title="${i.error || i.source}">${i.name}</span>
+        <span class="tag ${i.status}">${i.status}</span>
+        <button class="x" data-rm="${i.id}">✕</button></li>`).join('');
+  $('#sync').disabled = r.sync.running || !r.items.some(i => i.status === 'ready');
+  if (r.sync.total) {
+    $('#log').textContent =
+      (r.sync.running ? `${r.sync.done}/${r.sync.total}  ${r.sync.current}\n` : '') +
+      r.sync.log.join('\n');
+  }
+}
+
+function send(files) {
+  const fd = new FormData();
+  [...files].forEach(f => fd.append('files', f));
+  fetch('/api/upload', { method: 'POST', body: fd }).then(loadStaging);
+}
+
+const drop = $('#drop');
+drop.onclick = () => $('#file').click();
+$('#file').onchange = e => send(e.target.files);
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); send(e.dataTransfer.files); };
+
+document.onclick = async e => {
+  const rm = e.target.dataset.rm, del = e.target.dataset.del;
+  if (rm) { await fetch('/api/staging/' + rm, { method: 'DELETE' }); loadStaging(); }
+  if (del && confirm('Delete ' + del + ' from the card?')) {
+    const r = await api('/api/device/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: del })
+    });
+    if (!r.ok) alert(r.error);
+    loadCard();
+  }
+};
+
+$('#sync').onclick = async () => {
+  const r = await api('/api/sync', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ folder: $('#folder').value })
+  });
+  if (!r.ok) alert(r.error);
+  loadStaging();
+};
+
+$('#clear').onclick = () => fetch('/api/clear', { method: 'POST' }).then(loadStaging);
+$('#refresh').onclick = loadDevice;
+$('#browse').onchange = loadCard;
+
+loadDevice();
+loadStaging();
+setInterval(loadStaging, 1000);
+</script>
+</body>
+</html>

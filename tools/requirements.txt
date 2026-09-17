@@ -1,0 +1,12 @@
+# Progress bar for the batch conversion
+tqdm>=4.66
+
+# Serial transport for sync mode
+pyserial>=3.5
+
+# Local web UI for the file manager
+Flask>=3.0
+
+# Optional fallback: ships an ffmpeg binary if one isn't on PATH.
+# Remove this line if you already have ffmpeg installed system-wide.
+imageio-ffmpeg>=0.4.9
